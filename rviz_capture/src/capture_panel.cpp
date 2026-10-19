@@ -1,4 +1,8 @@
 #include "rviz_capture/capture_panel.hpp"
+#include "rviz_capture/synced_displays.hpp"
+#include <cmath>
+#include <set>
+#include <rviz_common/ros_integration/ros_node_abstraction_iface.hpp>
 #include <array>
 #include <functional>
 #include <stdexcept>
@@ -60,6 +64,8 @@ CapturePanel::CapturePanel(QWidget * parent) : Panel(parent)
   status_ = new QLabel("Ready", this);
   status_->setWordWrap(true);
   layout->addWidget(status_);
+  request_timer_ = new QTimer(this);
+  connect(request_timer_, &QTimer::timeout, this, &CapturePanel::pollRequest);
   timer_ = new QTimer(this);
   timer_->setTimerType(Qt::PreciseTimer);
   connect(timer_, &QTimer::timeout, this, &CapturePanel::capture);
@@ -105,9 +111,10 @@ void CapturePanel::stop()
   timer_->stop();
   setRecording(false);
 }
-void CapturePanel::capture()
+bool CapturePanel::capture()
 {
   QStringList written;
+  last_files_.clear();
   try {
     if (!view_->isChecked() && !images_->isChecked() && !window_->isChecked()) {
       throw std::runtime_error("Select at least one capture target");
@@ -150,7 +157,8 @@ void CapturePanel::capture()
           if (auto * child = dynamic_cast<rviz_common::DisplayGroup *>(display)) {
             visit(child, id);
           }
-          if (display->getClassId() != "rviz_default_plugins/Image" || !display->isEnabled()) {continue;}
+          if ((display->getClassId() != "rviz_default_plugins/Image" &&
+            display->getClassId() != "rviz_capture/SyncedImage") || !display->isEnabled()) {continue;}
           auto * widget = display->getAssociatedWidget();
           auto * panel = qobject_cast<rviz_common::RenderPanel *>(widget);
           if (!panel && widget) {panel = widget->findChild<rviz_common::RenderPanel *>();}
@@ -192,20 +200,137 @@ void CapturePanel::capture()
     }
     QJsonObject entry{{"frame", static_cast<qint64>(frame_)}, {"utc", stamp},
       {"target_fps", fps_->value()}, {"files", files}};
+    if (request_) {
+      entry.insert("source_frame", QString::fromStdString(request_->source_frame));
+      entry.insert("sensor_stamp", QJsonObject{{"sec", request_->sensor_stamp.sec},
+        {"nanosec", static_cast<qint64>(request_->sensor_stamp.nanosec)}});
+      QJsonArray required;
+      for (const auto & name : request_->required_displays) {required.append(QString::fromStdString(name));}
+      entry.insert("required_displays", required);
+      entry.insert("synchronized", true);
+    } else {entry.insert("synchronized", false);}
     QFile manifest(QDir(session_).filePath("frames.jsonl"));
     const auto line = QJsonDocument(entry).toJson(QJsonDocument::Compact) + '\n';
     if (!manifest.open(QIODevice::WriteOnly | QIODevice::Append) ||
       manifest.write(line) != line.size() || !manifest.flush()) {
       throw std::runtime_error("Cannot write capture manifest");
     }
+    last_files_ = written;
     ++frame_;
     status_->setText(QString("Saved %1 frame(s)\n%2").arg(frame_).arg(session_));
+    return true;
   } catch (const std::exception & error) {
     for (const auto & path : written) {QFile::remove(path);}
     stop();
-    status_->setText(QString("Capture stopped: %1").arg(error.what()));
+    last_error_ = QString::fromUtf8(error.what());
+    status_->setText(QString("Capture stopped: %1").arg(last_error_));
+    return false;
   }
 }
+
+void CapturePanel::onInitialize()
+{
+  auto node = getDisplayContext()->getRosNodeAbstraction().lock()->get_raw_node();
+  service_ = node->create_service<CaptureFrame>("/rviz_capture/capture_frame",
+    [this](std::shared_ptr<rmw_request_id_t> header, CaptureFrame::Request::SharedPtr request) {
+      QMetaObject::invokeMethod(this, [this, header, request] {
+        const auto reject = [&](const std::string & message) {
+          CaptureFrame::Response response;
+          response.message = message;
+          service_->send_response(*header, response);
+        };
+        if (request_ || timer_->isActive()) {reject("Capture busy; stop timer recording first"); return;}
+        if (request->source_frame.empty() || request->required_displays.empty() ||
+          !std::isfinite(request->timeout_seconds) || request->timeout_seconds <= 0 ||
+          request->timeout_seconds > 120 || request->sensor_stamp.nanosec >= 1000000000u) {
+          reject("Invalid capture request (timeout must be in (0, 120])"); return;
+        }
+        std::set<std::string> names(request->required_displays.begin(), request->required_displays.end());
+        if (names.size() != request->required_displays.size()) {reject("Duplicate required display names"); return;}
+        last_files_.clear();
+        request_ = request;
+        request_header_ = header;
+        deadline_ = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(static_cast<int>(request->timeout_seconds * 1000));
+        if (request->new_session) {session_.clear();}
+        setRecording(true);
+        record_->setEnabled(false);
+        status_->setText("Waiting for display updates...");
+        request_timer_->start(10);
+      }, Qt::QueuedConnection);
+    });
+}
+void CapturePanel::finishRequest(bool success, const std::string & message)
+{
+  request_timer_->stop();
+  CaptureFrame::Response response;
+  response.success = success;
+  response.message = message;
+  response.session_directory = session_.toStdString();
+  response.capture_frame = success ? frame_ - 1 : frame_;
+  if (success) {
+    for (const auto & file : last_files_) {response.files.push_back(file.toStdString());}
+  }
+  service_->send_response(*request_header_, response);
+  request_.reset();
+  request_header_.reset();
+  setRecording(false);
+  record_->setEnabled(true);
+  if (!success) {status_->setText(QString::fromStdString(message));}
+}
+void CapturePanel::pollRequest()
+{
+  if (!request_) {return;}
+  missing_.clear();
+  std::vector<rviz_common::Display *> displays;
+  std::function<void(rviz_common::DisplayGroup *)> visit = [&](rviz_common::DisplayGroup * group) {
+    for (int i = 0; i < group->numDisplays(); ++i) {
+      auto * display = group->getDisplayAt(i);
+      displays.push_back(display);
+      if (auto * child = dynamic_cast<rviz_common::DisplayGroup *>(display)) {visit(child);}
+    }
+  };
+  visit(getDisplayContext()->getRootDisplayGroup());
+  std::set<rviz_common::Display *> required;
+  for (const auto & name : request_->required_displays) {
+    rviz_common::Display * match = nullptr;
+    for (auto * display : displays) {
+      if (display->getName().toStdString() != name) {continue;}
+      if (match) {finishRequest(false, "Ambiguous display name: " + name); return;}
+      match = display;
+    }
+    auto * tracker = dynamic_cast<FrameTracker *>(match);
+    if (!match || !match->isEnabled() || !tracker) {
+      finishRequest(false, "Required display missing, disabled or not a Synced display: " + name); return;
+    }
+    required.insert(match);
+    if (!tracker->applied(request_->sensor_stamp)) {missing_.append(QString::fromStdString(name));}
+    for (int i = 0; i < match->numChildren(); ++i) {
+      auto * status = dynamic_cast<rviz_common::properties::StatusProperty *>(match->childAt(i));
+      if (status && status->getLevel() == rviz_common::properties::StatusProperty::Error) {
+        missing_.append(QString::fromStdString(name) + " (display error)");
+      }
+    }
+  }
+  // Every active dynamic view must participate, otherwise the output could mix frames.
+  for (auto * display : displays) {
+    if (!display->isEnabled()) {continue;}
+    const auto id = display->getClassId();
+    const bool dynamic = dynamic_cast<FrameTracker *>(display) ||
+      id == "rviz_default_plugins/PointCloud2" || id == "rviz_default_plugins/MarkerArray" ||
+      id == "rviz_default_plugins/Image";
+    if (dynamic && !required.count(display)) {
+      finishRequest(false, "Active sensor display omitted from required_displays: " + display->getName().toStdString()); return;
+    }
+  }
+  if (missing_.empty()) {
+    const bool success = capture();
+    finishRequest(success, success ? "Saved synchronized frame" : last_error_.toStdString());
+  } else if (std::chrono::steady_clock::now() >= deadline_) {
+    finishRequest(false, "Timed out waiting for display update: " + missing_.join(", ").toStdString());
+  }
+}
+
 void CapturePanel::save(rviz_common::Config config) const
 {
   Panel::save(config);

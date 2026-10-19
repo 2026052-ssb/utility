@@ -2,4 +2,7 @@
   <class name="rviz_capture/CapturePanel" type="rviz_capture::CapturePanel" base_class_type="rviz_common::Panel">
     <description>Save the main 3D view, individual Image panels, and the complete RViz window.</description>
   </class>
+  <class name="rviz_capture/SyncedImage" type="rviz_capture::SyncedImage" base_class_type="rviz_common::Display"><description>Image with processed-frame tracking for offline capture.</description></class>
+  <class name="rviz_capture/SyncedPointCloud2" type="rviz_capture::SyncedPointCloud2" base_class_type="rviz_common::Display"><description>PointCloud2 with processed-frame tracking for offline capture.</description></class>
+  <class name="rviz_capture/SyncedMarkerArray" type="rviz_capture::SyncedMarkerArray" base_class_type="rviz_common::Display"><description>MarkerArray with processed-frame tracking for offline capture.</description></class>
 </library>

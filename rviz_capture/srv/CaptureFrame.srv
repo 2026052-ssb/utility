@@ -1,0 +1,13 @@
+# Offline, single-producer replay: do not publish the next frame before success.
+string source_frame
+builtin_interfaces/Time sensor_stamp
+# Exact, unique RViz display names, all using rviz_capture/Synced* classes.
+string[] required_displays
+float64 timeout_seconds
+bool new_session
+---
+bool success
+string message
+string session_directory
+uint64 capture_frame
+string[] files

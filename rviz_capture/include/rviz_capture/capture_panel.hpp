@@ -2,6 +2,11 @@
 #define RVIZ_CAPTURE__CAPTURE_PANEL_HPP_
 #include <rviz_common/panel.hpp>
 #include <QString>
+#ifndef Q_MOC_RUN
+#include <rclcpp/rclcpp.hpp>
+#include <rviz_capture/srv/capture_frame.hpp>
+#include <chrono>
+#endif
 class QCheckBox;
 class QLineEdit;
 class QSpinBox;
@@ -15,10 +20,22 @@ class CapturePanel : public rviz_common::Panel
   Q_OBJECT
 public:
   explicit CapturePanel(QWidget * parent = nullptr);
+  void onInitialize() override;
   void load(const rviz_common::Config & config) override;
   void save(rviz_common::Config config) const override;
 private:
-  void capture();
+  bool capture();
+  void pollRequest();
+  void finishRequest(bool success, const std::string & message);
+  using CaptureFrame = rviz_capture::srv::CaptureFrame;
+  rclcpp::Service<CaptureFrame>::SharedPtr service_;
+  std::shared_ptr<rmw_request_id_t> request_header_;
+  CaptureFrame::Request::SharedPtr request_;
+  std::chrono::steady_clock::time_point deadline_;
+  QTimer * request_timer_;
+  QString last_error_;
+  QStringList last_files_;
+  QStringList missing_;
   void start();
   void stop();
   void newSession();
