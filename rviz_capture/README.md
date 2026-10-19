@@ -120,7 +120,7 @@ for frame in dataset:
     # 성공 응답 뒤에만 다음 입력 발행
 ```
 
-공통 모듈은 `projects/utils/rviz_capture`에서 관리하며, autoware-test2/test3의 재생 스크립트와 RViz 설정에는 캡처 연동을 추가하지 않습니다. 기존 프로젝트를 수정하지 않고 사용하는 방식은 Capture 패널의 단일 캡처·타이머 녹화입니다. 위 동기화 서비스와 클라이언트는 별도 재생 도구를 위한 선택적 API로 유지합니다. 현재 공통 모듈에는 기존 재생기를 외부에서 정지·진행시키는 기능이 없으므로, 프로젝트를 수정하지 않는 사용 방식에서는 모든 입력 프레임의 누락 없는 동기화 저장을 보장하지 않습니다.
+재생 측은 GPU 추론 결과까지 기다리고, RViz 측은 실제 표시 갱신을 기다립니다. 예제 연결은 `autoware-test2/rviz/centerpoint_capture.rviz`와 `autoware-test3/rviz/fusion_capture.rviz`, 각 재생 스크립트의 `--capture-rviz` 옵션을 참고하세요.
 
 동기화 저장 시 `frames.jsonl`에 `synchronized: true`, `source_frame`, `sensor_stamp: {sec, nanosec}`, `required_displays`가 추가됩니다. `utc`는 캡처 시작 벽시계 시각이고 센서 timestamp와 구분합니다. 수동·타이머 캡처는 `synchronized: false`입니다. 동기화 모드에서는 FPS가 재생 제어에 사용되지 않으며 영상 변환 시 원하는 재생 FPS를 지정합니다. 녹화 대상 설정은 패널 체크박스를 따릅니다.
 
@@ -137,4 +137,4 @@ python3 /home/hwe/projects/utils/rviz_capture/tests/smoke_offline.py
 
 검사는 카메라 2개/0개 구성, 늦게 도착한 카메라를 기다리는 동작, 실제 이미지 중심 픽셀의 프레임 일치, 검출 0개인 DELETEALL, 시간 초과 시 파일·로그를 추가하지 않는 동작을 확인합니다. 임시 디렉터리와 자체 실행한 RViz만 사용합니다.
 
-2026-10-19 검증: Jazzy 빌드와 위 GUI 통합 검사(카메라 2개/0개)를 통과했습니다. 프로젝트별 연동을 제거하기 전 autoware-test3/test2에서도 KITTI 시퀀스 00 실제 추론+RViz 재생 각 2프레임의 sensor timestamp 일치 및 PNG 내용을 확인했습니다. 해당 프로젝트별 연동은 현재 되돌린 상태이며 일반 재생에서 동기화 캡처를 자동 수행하지 않습니다.
+2026-10-19 검증: Jazzy 빌드, 위 GUI 통합 검사(카메라 2개/0개), autoware-test3/test2의 KITTI 시퀀스 00 실제 추론+RViz 재생 각 2프레임을 통과했습니다. 실제 재생 JSONL과 캡처 manifest의 sensor timestamp 일치 및 PNG 내용을 확인했습니다.
