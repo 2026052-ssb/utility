@@ -1,0 +1,5 @@
+<library path="rviz_capture">
+  <class name="rviz_capture/CapturePanel" type="rviz_capture::CapturePanel" base_class_type="rviz_common::Panel">
+    <description>Save the main 3D view, individual Image panels, and the complete RViz window.</description>
+  </class>
+</library>
